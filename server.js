@@ -8,6 +8,7 @@ const authRoutes = require('./routes/auth');
 const guestRoutes = require('./routes/guests');
 const rsvpRoutes = require('./routes/rsvp');
 const { authMiddleware } = require('./middleware/auth');
+const { startReminderCron } = require('./jobs/reminderCron');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -42,4 +43,5 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`אירועית server running on port ${PORT}`);
+  startReminderCron();
 });

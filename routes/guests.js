@@ -1,20 +1,32 @@
 const express = require('express');
 const crypto = require('crypto');
+const multer = require('multer');
+const XLSX = require('xlsx');
+const { parse: csvParse } = require('csv-parse/sync');
 const { Parser } = require('json2csv');
 const pool = require('../db/pool');
 const { authMiddleware } = require('../middleware/auth');
+
+// Memory storage — files never hit disk
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 const router = express.Router();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Normalize Israeli phone to E.164: 05X-XXXXXXX or 05XXXXXXXXX → +972XXXXXXXXX */
+/**
+ * Normalize Israeli phone to E.164 (+972XXXXXXXXX).
+ * Handles: local 05X-XXXXXXX, already E.164, international without +.
+ * Returns null for unrecognizable formats (caller decides how to handle).
+ */
 function normalizeIsraeliPhone(phone) {
   if (!phone) return null;
-  const digits = phone.replace(/\D/g, '');
+  // Strip spaces, hyphens, parentheses
+  const digits = String(phone).replace(/[\s\-\(\)]/g, '');
+  if (digits.startsWith('+972')) return digits;
   if (digits.startsWith('972')) return `+${digits}`;
   if (digits.startsWith('0')) return `+972${digits.slice(1)}`;
-  return `+${digits}`;
+  return null; // invalid — caller sets phone=null and records warning
 }
 
 /** Generate a cryptographically secure RSVP token (128 bits = 32 hex chars) */
@@ -401,6 +413,167 @@ router.delete('/guests/:guestId', authMiddleware, async (req, res) => {
     console.error('Delete guest error:', err.message);
     return res.status(500).json({ error: 'Failed to delete guest' });
   }
+});
+
+// ─── GET /api/events/:eventId/guests/reminders — Pending reminder links ───────
+
+router.get('/events/:eventId/guests/reminders', authMiddleware, async (req, res) => {
+  const { eventId } = req.params;
+  const organizerId = req.user.id;
+
+  const event = await verifyEventOwner(eventId, organizerId).catch(() => null);
+  if (!event) return res.status(404).json({ error: 'Event not found' });
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         g.id, g.name_hebrew, g.name_transliteration, g.phone,
+         i.token, i.whatsapp_link,
+         EXTRACT(DAY FROM (e.event_date::date - CURRENT_DATE)) AS days_until
+       FROM guests g
+       JOIN invitations i ON i.guest_id = g.id
+       JOIN events e ON e.id = g.event_id
+       WHERE g.event_id = $1
+         AND g.rsvp_status = 'pending'
+         AND e.event_date > NOW()
+         AND i.whatsapp_link IS NOT NULL
+       ORDER BY g.name_hebrew`,
+      [eventId]
+    );
+    return res.json({ reminders: rows });
+  } catch (err) {
+    console.error('Reminders error:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch reminders' });
+  }
+});
+
+// ─── POST /api/events/:eventId/guests/import — CSV/Excel bulk import ──────────
+
+const VALID_DIETARY = ['none', 'vegetarian', 'vegan', 'kosher_regular', 'kosher_mehadrin'];
+const VALID_RELATIONSHIP = ['family_bride', 'family_groom', 'friends', 'work', 'community', 'other'];
+const MAX_IMPORT_ROWS = 500;
+
+function normalizeImportRow(raw) {
+  const name_hebrew = (raw.name_hebrew || raw['שם בעברית'] || raw.name || '').trim();
+  const name_transliteration = (raw.name_transliteration || raw.name_latin || raw['שם באנגלית'] || '').trim() || null;
+  const rawPhone = raw.phone || raw['טלפון'] || raw['phone'] || '';
+  const rawDietary = (raw.dietary_preference || raw['העדפה תזונתית'] || '').trim().toLowerCase();
+  const rawRelationship = (raw.relationship_group || raw['קבוצת יחסים'] || '').trim().toLowerCase();
+  const email = (raw.email || raw['אימייל'] || '').trim().toLowerCase() || null;
+
+  const phone = normalizeIsraeliPhone(rawPhone);
+  const phoneWarning = rawPhone && !phone ? `טלפון לא תקין: "${rawPhone}"` : null;
+
+  const dietary_preference = VALID_DIETARY.includes(rawDietary) ? rawDietary : 'none';
+  const relationship_group = VALID_RELATIONSHIP.includes(rawRelationship) ? rawRelationship : (rawRelationship ? 'other' : null);
+
+  return { name_hebrew, name_transliteration, phone, phoneWarning, email, dietary_preference, relationship_group };
+}
+
+router.post('/events/:eventId/guests/import', authMiddleware, upload.single('file'), async (req, res) => {
+  const { eventId } = req.params;
+  const organizerId = req.user.id;
+
+  if (req.user.role !== 'organizer') {
+    return res.status(403).json({ error: 'Only organizers can import guests' });
+  }
+
+  const event = await verifyEventOwner(eventId, organizerId).catch(() => null);
+  if (!event) return res.status(404).json({ error: 'Event not found' });
+
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const mimeType = req.file.mimetype;
+  const originalName = req.file.originalname.toLowerCase();
+
+  let rows = [];
+  try {
+    if (originalName.endsWith('.xlsx') || originalName.endsWith('.xls') || mimeType.includes('spreadsheet') || mimeType.includes('excel')) {
+      const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    } else {
+      // CSV (utf-8 or utf-8 with BOM)
+      const content = req.file.buffer.toString('utf-8').replace(/^\uFEFF/, '');
+      rows = csvParse(content, { columns: true, skip_empty_lines: true, trim: true });
+    }
+  } catch (parseErr) {
+    return res.status(400).json({ error: `לא ניתן לנתח את הקובץ: ${parseErr.message}` });
+  }
+
+  if (rows.length === 0) return res.status(400).json({ error: 'הקובץ ריק' });
+  if (rows.length > MAX_IMPORT_ROWS) {
+    return res.status(400).json({ error: `מקסימום ${MAX_IMPORT_ROWS} שורות לייבוא. הקובץ מכיל ${rows.length} שורות.` });
+  }
+
+  const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
+  const imported = [];
+  const skipped = [];
+  const warnings = [];
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const normalized = normalizeImportRow(row);
+
+      if (!normalized.name_hebrew) {
+        skipped.push({ row: i + 2, reason: 'שם בעברית חסר' });
+        continue;
+      }
+
+      if (normalized.phoneWarning) {
+        warnings.push({ row: i + 2, name: normalized.name_hebrew, warning: normalized.phoneWarning });
+      }
+
+      const guestResult = await client.query(
+        `INSERT INTO guests (event_id, name_hebrew, name_transliteration, email, phone,
+                             dietary_preference, relationship_group, source, privacy_accepted_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'registered', NOW())
+         RETURNING id`,
+        [
+          eventId,
+          normalized.name_hebrew,
+          normalized.name_transliteration,
+          normalized.email,
+          normalized.phone,
+          normalized.dietary_preference,
+          normalized.relationship_group,
+        ]
+      );
+
+      const guestId = guestResult.rows[0].id;
+      const token = generateRsvpToken();
+      const rsvpUrl = `${baseUrl}/rsvp/${token}`;
+      const whatsappLink = normalized.phone ? buildWhatsAppLink(normalized.phone, event.title, rsvpUrl) : null;
+
+      await client.query(
+        `INSERT INTO invitations (event_id, guest_id, token, channel, whatsapp_link)
+         VALUES ($1,$2,$3,'whatsapp',$4)`,
+        [eventId, guestId, token, whatsappLink]
+      );
+
+      imported.push(normalized.name_hebrew);
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Import error:', err.message);
+    return res.status(500).json({ error: 'ייבוא נכשל, הנתונים לא נשמרו' });
+  } finally {
+    client.release();
+  }
+
+  return res.status(201).json({
+    imported: imported.length,
+    skipped: skipped.length,
+    warnings: warnings.length,
+    details: { skipped, warnings },
+    message: `יובאו ${imported.length} אורחים. ${skipped.length} שורות דולגו.`,
+  });
 });
 
 module.exports = router;

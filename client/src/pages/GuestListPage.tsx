@@ -6,6 +6,8 @@ import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { RsvpSummaryCard } from '@/components/RsvpSummaryCard';
 import { AddGuestForm } from '@/components/AddGuestForm';
+import { ImportGuestsForm } from '@/components/ImportGuestsForm';
+import { PendingRemindersPanel } from '@/components/PendingRemindersPanel';
 
 interface Guest {
   id: string;
@@ -52,6 +54,7 @@ export function GuestListPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [search, setSearch] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   const fetchGuests = useCallback(async () => {
     if (!eventId) return;
@@ -80,12 +83,17 @@ export function GuestListPage() {
     return () => clearInterval(interval);
   }, [fetchGuests]);
 
+  function triggerRefresh() {
+    fetchGuests();
+    setRefreshTrigger(n => n + 1);
+  }
+
   async function handleDelete(guestId: string, guestName: string) {
     if (!confirm(`האם למחוק את האורח "${guestName}"? פעולה זו היא סופית.`)) return;
     setDeletingId(guestId);
     try {
       await fetch(`/api/guests/${guestId}`, { method: 'DELETE', credentials: 'include' });
-      fetchGuests();
+      triggerRefresh();
     } finally {
       setDeletingId(null);
     }
@@ -98,7 +106,7 @@ export function GuestListPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rsvp_status: newStatus }),
     });
-    fetchGuests();
+    triggerRefresh();
   }
 
   function handleExport() {
@@ -119,7 +127,12 @@ export function GuestListPage() {
 
         <RsvpSummaryCard summary={summary} warning={warning} />
 
-        <AddGuestForm eventId={eventId!} onGuestAdded={fetchGuests} />
+        <PendingRemindersPanel eventId={eventId!} refreshTrigger={refreshTrigger} />
+
+        <div className="flex gap-3 flex-wrap">
+          <AddGuestForm eventId={eventId!} onGuestAdded={triggerRefresh} />
+          <ImportGuestsForm eventId={eventId!} onImported={triggerRefresh} />
+        </div>
 
         {/* Filters */}
         <div className="flex gap-3 flex-wrap">
