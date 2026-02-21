@@ -5,6 +5,7 @@ const cors = require('cors');
 const path = require('path');
 
 const authRoutes = require('./routes/auth');
+const eventRoutes = require('./routes/events');
 const guestRoutes = require('./routes/guests');
 const rsvpRoutes = require('./routes/rsvp');
 const { authMiddleware } = require('./middleware/auth');
@@ -32,7 +33,8 @@ app.use('/api/rsvp', rsvpRoutes);
 // All routes below require valid JWT
 app.use('/api', authMiddleware);
 
-// Guest management routes (auth enforced above)
+// Event + Guest management routes (auth enforced above)
+app.use('/api/events', eventRoutes);
 app.use('/api', guestRoutes);
 
 // Serve React frontend in production

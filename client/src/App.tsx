@@ -6,6 +6,12 @@ import { RegisterPage } from '@/pages/RegisterPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { GuestListPage } from '@/pages/GuestListPage';
 import { RsvpPage } from '@/pages/RsvpPage';
+import { CreateEventPage } from '@/pages/CreateEventPage';
+import { EventDetailPage } from '@/pages/EventDetailPage';
+
+function Protected({ children }: { children: React.ReactNode }) {
+  return <ProtectedRoute>{children}</ProtectedRoute>;
+}
 
 export default function App() {
   return (
@@ -18,22 +24,10 @@ export default function App() {
           <Route path="/rsvp/:token" element={<RsvpPage />} />
 
           {/* Protected routes */}
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute>
-                <DashboardPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/events/:eventId/guests"
-            element={
-              <ProtectedRoute>
-                <GuestListPage />
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/dashboard" element={<Protected><DashboardPage /></Protected>} />
+          <Route path="/events/new" element={<Protected><CreateEventPage /></Protected>} />
+          <Route path="/events/:id" element={<Protected><EventDetailPage /></Protected>} />
+          <Route path="/events/:eventId/guests" element={<Protected><GuestListPage /></Protected>} />
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
