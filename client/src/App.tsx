@@ -4,14 +4,20 @@ import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { LoginPage } from '@/pages/LoginPage';
 import { RegisterPage } from '@/pages/RegisterPage';
 import { DashboardPage } from '@/pages/DashboardPage';
+import { GuestListPage } from '@/pages/GuestListPage';
+import { RsvpPage } from '@/pages/RsvpPage';
 
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <Routes>
+          {/* Public routes */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/rsvp/:token" element={<RsvpPage />} />
+
+          {/* Protected routes */}
           <Route
             path="/dashboard"
             element={
@@ -20,7 +26,15 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          {/* Default: redirect root to dashboard (ProtectedRoute will redirect to /login if unauthed) */}
+          <Route
+            path="/events/:eventId/guests"
+            element={
+              <ProtectedRoute>
+                <GuestListPage />
+              </ProtectedRoute>
+            }
+          />
+
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

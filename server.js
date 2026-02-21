@@ -5,6 +5,8 @@ const cors = require('cors');
 const path = require('path');
 
 const authRoutes = require('./routes/auth');
+const guestRoutes = require('./routes/guests');
+const rsvpRoutes = require('./routes/rsvp');
 const { authMiddleware } = require('./middleware/auth');
 
 const app = express();
@@ -23,8 +25,14 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 // Auth routes — no middleware (register/login are public)
 app.use('/api/auth', authRoutes);
 
+// Public RSVP routes — no auth required
+app.use('/api/rsvp', rsvpRoutes);
+
 // All routes below require valid JWT
 app.use('/api', authMiddleware);
+
+// Guest management routes (auth enforced above)
+app.use('/api', guestRoutes);
 
 // Serve React frontend in production
 app.use(express.static(path.join(__dirname, 'client', 'dist')));
